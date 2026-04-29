@@ -5,6 +5,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import plistlib
 import re
 import sqlite3
 import subprocess
@@ -383,6 +384,24 @@ def write_image_metadata(path: Path, labels: list[str]) -> None:
     )
     subprocess.run(["xattr", "-w", "user.tagme.labels", ",".join(labels), str(path)], check=False, capture_output=True)
     subprocess.run(["xattr", "-w", "user.tagme.json", payload, str(path)], check=False, capture_output=True)
+    # Write native macOS metadata so Spotlight/Finder search can use labels.
+    try:
+        user_tags = [f"tagme:{l}" for l in labels]
+        tags_plist = plistlib.dumps(user_tags, fmt=plistlib.FMT_BINARY)
+        comment = "tagme labels: " + ", ".join(labels)
+        comment_plist = plistlib.dumps(comment, fmt=plistlib.FMT_BINARY)
+        subprocess.run(
+            ["xattr", "-wx", "com.apple.metadata:_kMDItemUserTags", tags_plist.hex(), str(path)],
+            check=False,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["xattr", "-wx", "com.apple.metadata:kMDItemFinderComment", comment_plist.hex(), str(path)],
+            check=False,
+            capture_output=True,
+        )
+    except Exception:
+        pass
 
 
 def unique_path(path: Path) -> Path:
