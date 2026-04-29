@@ -1,0 +1,22 @@
+{
+  "watch_dirs": [
+    "/Users/federicodeponte/Desktop",
+    "/Users/federicodeponte/Downloads",
+    "/Users/federicodeponte/Documents"
+  ],
+  "ignore_prefixes": [
+    ".",
+    "_Desktop_Cleanup_"
+  ],
+  "rename": true,
+  "write_finder_comment": false,
+  "filename_format": "{date}__{labels}__{orig}",
+  "max_labels": 4,
+  "ollama": {
+    "enabled": true,
+    "model": "llava:7b",
+    "endpoint": "http://127.0.0.1:11434/api/generate",
+    "timeout_seconds": 20
+  },
+  "enabled_since": "2026-04-28T15:34:51"
+}
