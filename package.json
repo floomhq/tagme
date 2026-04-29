@@ -1,9 +1,9 @@
 {
-  "name": "@floomhq/floomlens",
+  "name": "@floomhq/tagme",
   "version": "0.1.0",
   "description": "AI desktop file auto-labeler (OCR + local vision) for screenshots and docs",
   "bin": {
-    "floomlens": "scripts/floomlens.js"
+    "tagme": "scripts/tagme.js"
   },
   "files": [
     "scripts",
@@ -23,10 +23,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/floomhq/floomlens.git"
+    "url": "git+https://github.com/floomhq/tagme.git"
   },
-  "homepage": "https://github.com/floomhq/floomlens#readme",
+  "homepage": "https://github.com/floomhq/tagme#readme",
   "bugs": {
-    "url": "https://github.com/floomhq/floomlens/issues"
+    "url": "https://github.com/floomhq/tagme/issues"
   }
 }

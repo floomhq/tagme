@@ -377,12 +377,12 @@ def write_image_metadata(path: Path, labels: list[str]) -> None:
         {
             "labels": labels,
             "labeled_at": dt.datetime.now().isoformat(timespec="seconds"),
-            "tool": "floomlens",
+            "tool": "tagme",
         },
         separators=(",", ":"),
     )
-    subprocess.run(["xattr", "-w", "user.floomlens.labels", ",".join(labels), str(path)], check=False, capture_output=True)
-    subprocess.run(["xattr", "-w", "user.floomlens.json", payload, str(path)], check=False, capture_output=True)
+    subprocess.run(["xattr", "-w", "user.tagme.labels", ",".join(labels), str(path)], check=False, capture_output=True)
+    subprocess.run(["xattr", "-w", "user.tagme.json", payload, str(path)], check=False, capture_output=True)
 
 
 def unique_path(path: Path) -> Path:

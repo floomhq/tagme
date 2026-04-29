@@ -1,13 +1,13 @@
-# FloomLens
+# Tagme
 
-**FloomLens** is an AI file auto-labeler for macOS that turns messy screenshots and downloads into searchable, context-rich filenames.
+**Tagme** is an AI file auto-labeler for macOS that turns messy screenshots and downloads into searchable, context-rich filenames.
 
 It combines **Tesseract OCR** and **Ollama vision (llava:7b)** to identify:
 - source app/site (`floom`, `github`, `linkedin`)
 - screen intent (`token-setup`, `dashboard`, `signin`)
 - task context (`mcp-config`, `api-token`, `agent-auth`)
 
-## Why FloomLens
+## Why Tagme
 - Automatic desktop cleanup without deleting files
 - Better screenshot search and retrieval
 - Works locally with private on-device inference
@@ -56,7 +56,7 @@ launchctl load ~/Library/LaunchAgents/com.federico.filelabeler.plist
 ## CLI
 Run one scan:
 ```bash
-floomlens
+tagme
 ```
 
 ## Config
@@ -75,14 +75,14 @@ Main keys:
 - State DB: `~/.local/state/file-labeler/labels.db`
 
 ## npm wrapper
-This repo includes `@floomhq/floomlens` for JS users. It wraps the Python CLI:
+This repo includes `@floomhq/tagme` for JS users. It wraps the Python CLI:
 ```bash
-npx @floomhq/floomlens
+npx @floomhq/tagme
 ```
 
 ## PyPI
 Package name:
-- `floomlens`
+- `tagme`
 
 ## License
 MIT
