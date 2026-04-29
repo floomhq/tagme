@@ -371,6 +371,20 @@ def set_finder_comment(path: Path, labels: list[str]) -> None:
     subprocess.run(["osascript", "-e", script], check=False, capture_output=True)
 
 
+def write_image_metadata(path: Path, labels: list[str]) -> None:
+    # Store machine-readable labels in extended attributes for agent/tool discovery.
+    payload = json.dumps(
+        {
+            "labels": labels,
+            "labeled_at": dt.datetime.now().isoformat(timespec="seconds"),
+            "tool": "floomlens",
+        },
+        separators=(",", ":"),
+    )
+    subprocess.run(["xattr", "-w", "user.floomlens.labels", ",".join(labels), str(path)], check=False, capture_output=True)
+    subprocess.run(["xattr", "-w", "user.floomlens.json", payload, str(path)], check=False, capture_output=True)
+
+
 def unique_path(path: Path) -> Path:
     if not path.exists():
         return path
@@ -470,6 +484,9 @@ def process_file(path: Path, cfg: dict, conn: sqlite3.Connection, can_ollama: bo
     uniq = uniq[: cfg.get("max_labels", 4)]
 
     new_path = maybe_rename(path, uniq, cfg)
+
+    if new_path.suffix.lower() in IMAGE_EXTS:
+        write_image_metadata(new_path, uniq)
 
     if cfg.get("write_finder_comment", True):
         set_finder_comment(new_path, uniq)
