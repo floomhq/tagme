@@ -1,3 +1,22 @@
+Metadata-Version: 2.4
+Name: floomlens
+Version: 0.1.0
+Summary: AI file auto-labeling for screenshots, documents, and media using OCR + local vision
+Author: FloomHQ
+License-Expression: MIT
+Project-URL: Homepage, https://github.com/floomhq/floomlens
+Project-URL: Repository, https://github.com/floomhq/floomlens
+Project-URL: Issues, https://github.com/floomhq/floomlens/issues
+Keywords: file-organizer,screenshot-organizer,desktop-cleanup,ocr,ollama,llava,macos,file-labeling,ai-automation
+Classifier: Programming Language :: Python :: 3
+Classifier: Operating System :: MacOS
+Classifier: Topic :: Office/Business
+Classifier: Topic :: Utilities
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Dynamic: license-file
+
 # FloomLens
 
 **FloomLens** is an AI file auto-labeler for macOS that turns messy screenshots and downloads into searchable, context-rich filenames.

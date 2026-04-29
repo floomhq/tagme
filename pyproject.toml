@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "floomlens"
+version = "0.1.0"
+description = "AI file auto-labeling for screenshots, documents, and media using OCR + local vision"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+  { name = "FloomHQ" }
+]
+keywords = [
+  "file-organizer",
+  "screenshot-organizer",
+  "desktop-cleanup",
+  "ocr",
+  "ollama",
+  "llava",
+  "macos",
+  "file-labeling",
+  "ai-automation"
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: MacOS",
+  "Topic :: Office/Business",
+  "Topic :: Utilities"
+]
+
+[project.urls]
+Homepage = "https://github.com/floomhq/floomlens"
+Repository = "https://github.com/floomhq/floomlens"
+Issues = "https://github.com/floomhq/floomlens/issues"
+
+[project.scripts]
+floomlens = "floomlens.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
