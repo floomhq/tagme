@@ -1,68 +1,129 @@
 # Tagme
 
-Screenshots are amazing.
+Screenshots, downloads, and documents pile up. Finding the right file later is a pain.
 
-Until you need to find one.
+**Tagme** auto-labels your files using local OCR + a tiny AI model. It renames files with searchable tags and writes metadata so Spotlight and any agent can find them.
 
-So I built **TAGME**:
-a local Mac app that auto-labels your screenshots.
-
-![Tagme launch visual](docs/tagme-launch.png)
+```
+IMG_4121.heic → 2026-06-05__finance-transactions-euro-credit__img-4121.png
+```
 
 ## How it works
-1. You take a screenshot
-2. A small local AI model understands what's inside
-3. It writes searchable labels into the file metadata
 
-Now Spotlight gets smarter.
-And your desktop agents can find the right screenshot in seconds.
-
-It's open source on GitHub.
-Setup takes one prompt.
-
-## What Tagme adds
-- Native labels in metadata (`user.tagme.labels`, `user.tagme.json`)
-- OCR + local vision (`tesseract` + `ollama`/`llava:7b`)
-- Consumer-friendly classification: source + screen type + task topic
-- Automatic filename normalization for easier retrieval
-
-Example output:
-- `2026-04-28__source-floom__type-token-setup__topic-mcp-config__screenshot-2026-04-28-at-20-05.png`
+1. **Scan** — Every 2 minutes, the daemon scans your watch directories
+2. **OCR** — Tesseract reads any text in images
+3. **Tag** — A local 1.5B model (Qwen via Ollama) turns that text into 4 content tags
+4. **Write** — Tags go into EXIF, xattrs, the filename, and a local SQLite DB
+5. **Search** — `mdfind` or any filename search finds your files instantly
 
 ## Install (macOS)
-1. Install dependencies:
+
+### 1. Install dependencies
+
 ```bash
-brew install tesseract imagemagick ollama
+brew install tesseract imagemagick exiftool ollama
 ```
-2. Pull model:
+
+### 2. Pull the model
+
 ```bash
-ollama pull llava:7b
+ollama pull qwen2.5:1.5b
 ```
-3. Install package locally:
+
+### 3. Copy the script
+
 ```bash
-pip install .
+cp bin/auto_file_labeler.py ~/bin/auto_file_labeler.py
+chmod +x ~/bin/auto_file_labeler.py
 ```
-4. Copy config:
+
+### 4. Configure
+
 ```bash
 mkdir -p ~/.config/file-labeler
 cp config/config.example.json ~/.config/file-labeler/config.json
+# Edit paths and settings to taste
 ```
-5. Install launch agent:
+
+### 5. Install the LaunchAgent
+
 ```bash
 cp launchd/com.federico.filelabeler.plist ~/Library/LaunchAgents/
-launchctl unload ~/Library/LaunchAgents/com.federico.filelabeler.plist >/dev/null 2>&1 || true
 launchctl load ~/Library/LaunchAgents/com.federico.filelabeler.plist
 ```
 
-## CLI
+## Search your files
+
+**Spotlight** (uses EXIF `ImageDescription`):
 ```bash
-tagme
+mdfind "kMDItemDescription == '*finance*'"
 ```
 
-## npm
+**Filename** (works everywhere):
 ```bash
-npx @floomhq/tagme
+find ~/Desktop -name '*finance*'
+```
+
+**xattrs** (programmatic):
+```bash
+xattr -p user.floomlens.labels ~/Desktop/2026-06-05__finance*.png
+```
+
+## What gets stored
+
+| Location | Content | Durability |
+|---|---|---|
+| **Filename** | `date__tag1-tag2-tag3__original.ext` | ✅ Survives everything |
+| **EXIF** | `ImageDescription` with tags | ✅ Spotlight-indexed |
+| **xattrs** | `user.floomlens.labels` + `.json` | ⚠️ macOS/APFS only |
+| **SQLite** | Path, fingerprint, labels | ⚠️ Local DB only |
+
+The filename is your portable, durable tag. EXIF is great for Spotlight. xattrs are a bonus for macOS-native workflows.
+
+## How good are the tags?
+
+**Good:** Screenshots, slides, memes, documents, receipts — anything with readable text.
+
+**Weak:** Photos, art, illustrations without text. OCR reads letters, not pixels. If there's no text, you get a generic fallback like `['image']`.
+
+Want magic computer-vision tagging of any image? You'd need a vision model (GPT-4o, Llava, etc.) — this setup is intentionally zero-cost and offline.
+
+## Config options
+
+```json
+{
+  "watch_dirs": ["/Users/you/Desktop", "/Users/you/Downloads"],
+  "ignore_prefixes": [".", "_Desktop_Cleanup_"],
+  "rename": true,
+  "filename_format": "{date}__{labels}__{orig}",
+  "max_labels": 4,
+  "model": "qwen2.5:1.5b",
+  "endpoint": "http://127.0.0.1:11434/api/generate",
+  "timeout": 30,
+  "recursive": false
+}
+```
+
+| Key | Description |
+|---|---|
+| `watch_dirs` | Directories to scan |
+| `rename` | Rename files with tags? |
+| `filename_format` | `{date}__{labels}__{orig}` + extension |
+| `max_labels` | 1–10 tags (default 4) |
+| `model` | Ollama model name |
+| `recursive` | Scan subdirectories? |
+
+## Run manually
+
+```bash
+~/bin/auto_file_labeler.py
+```
+
+Run tests:
+```bash
+TEST=1 ~/bin/auto_file_labeler.py
 ```
 
 ## License
+
 MIT
