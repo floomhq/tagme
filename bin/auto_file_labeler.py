@@ -344,6 +344,13 @@ def write_exif(path: Path, labels: list[str]) -> bool:
     if not labels:
         return True
     desc = " ".join(labels)
+    # Clean up stale exiftool temp files from previous crashes
+    stale = Path(str(path) + "_exiftool_tmp")
+    if stale.exists():
+        try:
+            stale.unlink()
+        except OSError:
+            pass
     exif = None
     try:
         exif = subprocess.run(
