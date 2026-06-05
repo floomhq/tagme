@@ -1,23 +1,46 @@
-# Tagme
+# Tagme — Auto-Label & Organize Your Files with Local AI
 
-Screenshots, downloads, and documents pile up. Finding the right file later is a pain.
+Your Desktop and Downloads folder are a mess. Screenshots pile up with names like `IMG_4121.heic`. Documents sit as `document.pdf`. Finding that one receipt, screenshot, or invoice later is nearly impossible.
 
-**Tagme** auto-labels your files using local OCR + vision + a small AI model. It renames files with searchable tags and writes metadata so Spotlight and any agent can find them.
+**Tagme** is a local macOS daemon that automatically labels your files using OCR + vision AI. It reads text in images, understands what's inside, and renames files with searchable tags — so Spotlight, Finder, and any AI agent can find them in seconds.
 
 ```
-IMG_4121.heic → 2026-06-05__finance-transactions-euro-credit__img-4121.png
+IMG_4121.heic
+→ 2026-06-05__finance-transactions-euro-credit__img-4121.png
+
+Screenshot 2026-06-05 at 11.54.13 AM.png
+→ 2026-06-05__pipeline-summary-sales-hiring__screenshot.png
 ```
 
-## How it works
+**No cloud. No API keys. No subscriptions.** Everything runs locally on your Mac via Ollama.
 
-1. **Scan** — Every 2 minutes, the daemon scans your watch directories
-2. **OCR** — Tesseract reads text in images (fast, precise)
-3. **Vision** — A local vision model (Llava via Ollama) sees the image **and** the OCR text
-4. **Tag** — The model cross-references pixels + text to generate 4 content tags
-5. **Write** — Tags go into EXIF, xattrs, the filename, and a local SQLite DB
-6. **Search** — `mdfind` or any filename search finds your files instantly
+---
 
-**Why hybrid?** Vision-only models ignore instructions and ramble. OCR-only misses visual context. Combining both grounds the model — it uses the text for precision and the image for context.
+## What Tagme Does
+
+| Problem | Before Tagme | After Tagme |
+|---|---|---|
+| Screenshots | `Screenshot 2026-06-05...png` | `2026-06-05__berlin-office-remote__screenshot.png` |
+| Receipts | `IMG_4268.heic` | `2026-06-05__finance-transactions-euro-credit__img-4268.png` |
+| Documents | `document.pdf` | `2026-06-05__document__document.pdf` |
+| Finding files | Scroll forever | `mdfind "kMDItemDescription == '*finance*'"` |
+
+Tagme is a **file organizer**, **auto tagger**, **screenshot manager**, and **document classifier** rolled into one.
+
+---
+
+## How It Works
+
+1. **Scan** — A LaunchAgent runs every 2 minutes, watching your Desktop, Downloads, and Documents
+2. **OCR** — Tesseract extracts all readable text from images (fast, precise)
+3. **Vision** — A local vision model (Llava via Ollama) *sees* the image layout *and* reads the OCR text
+4. **Tag** — The model cross-references pixels + text to generate 4 accurate content tags
+5. **Write** — Tags go into the **filename** (portable), **EXIF metadata** (Spotlight-searchable), **xattrs** (programmatic), and a local SQLite database
+6. **Search** — Find files instantly via Spotlight, Finder, terminal, or any AI agent
+
+**Why hybrid?** Vision-only models ramble and ignore instructions. OCR-only misses visual context. Combining both grounds the model — it uses text for precision and the image for layout context.
+
+---
 
 ## Install (macOS)
 
@@ -27,75 +50,102 @@ IMG_4121.heic → 2026-06-05__finance-transactions-euro-credit__img-4121.png
 brew install tesseract imagemagick exiftool ollama
 ```
 
-### 2. Pull the model
+### 2. Pull the vision model
 
 ```bash
 ollama pull llava:7b
 ```
 
-**Alternatives:** `llava-phi3` (2.9GB, faster) or `llava:13b` (8GB, slower but sharper).
+**Alternatives:** `llava-phi3` (2.9GB, faster) or `llava:13b` (8GB, sharper but slower).
 
-### 3. Copy the script
+### 3. Download Tagme
 
 ```bash
-cp bin/auto_file_labeler.py ~/bin/auto_file_labeler.py
-chmod +x ~/bin/auto_file_labeler.py
+curl -o ~/bin/tagme https://raw.githubusercontent.com/floomhq/tagme/main/bin/auto_file_labeler.py
+chmod +x ~/bin/tagme
 ```
 
 ### 4. Configure
 
 ```bash
 mkdir -p ~/.config/file-labeler
-cp config/config.example.json ~/.config/file-labeler/config.json
+curl -o ~/.config/file-labeler/config.json https://raw.githubusercontent.com/floomhq/tagme/main/config/config.example.json
 # Edit paths and settings to taste
 ```
 
 ### 5. Install the LaunchAgent
 
 ```bash
-cp launchd/com.federico.filelabeler.plist ~/Library/LaunchAgents/
+curl -o ~/Library/LaunchAgents/com.federico.filelabeler.plist https://raw.githubusercontent.com/floomhq/tagme/main/launchd/com.federico.filelabeler.plist
 launchctl load ~/Library/LaunchAgents/com.federico.filelabeler.plist
 ```
 
-## Search your files
+---
 
-**Spotlight** (uses EXIF `ImageDescription`):
+## Search Your Files
+
+### Spotlight (uses EXIF `ImageDescription`)
 ```bash
 mdfind "kMDItemDescription == '*finance*'"
 ```
 
-**Filename** (works everywhere):
+### Finder / Terminal (uses filename)
 ```bash
 find ~/Desktop -name '*finance*'
+find ~/Downloads -name '*rocketlist*'
 ```
 
-**xattrs** (programmatic):
+### xattrs (programmatic access)
 ```bash
 xattr -p user.floomlens.labels ~/Desktop/2026-06-05__finance*.png
 ```
 
-## What gets stored
+---
 
-| Location | Content | Durability |
+## Use Cases
+
+### Screenshot Organization
+Tired of `Screenshot 2026-06-05 at 11.54.13 AM.png`? Tagme reads the text on screen and renames it to something useful like `2026-06-05__pipeline-summary-sales-hiring__screenshot.png`. Search "sales" or "hiring" and find it instantly.
+
+### Receipt & Invoice Management
+Photos of receipts get renamed with the merchant, amount, and date. No more scrolling through `IMG_4121.heic` to find your Uber receipt from March.
+
+### Document Classification
+PDFs and text files get labeled by content type. A hiring contract becomes `2026-06-05__document__hiring-contract.pdf`. A spreadsheet of leads becomes `2026-06-05__spreadsheet__sales-leads.csv`.
+
+### AI Agent File Access
+Any AI assistant (Claude, ChatGPT, Kimi) can find your files by name because the tags are literally in the filename. No special tools needed.
+
+---
+
+## What Gets Stored Where
+
+| Location | Content | Survives Email? | Survives Cloud? | Survives Reformat? |
+|---|---|---|---|---|
+| **Filename** | `date__tag1-tag2-tag3__original.ext` | ✅ Yes | ✅ Yes | ✅ Yes |
+| **EXIF** | `ImageDescription` with tags | ⚠️ Sometimes | ⚠️ Sometimes | ❌ No |
+| **xattrs** | `user.floomlens.labels` + `.json` | ❌ No | ❌ No | ❌ No |
+| **SQLite DB** | Path, fingerprint, labels | ❌ No | ❌ No | ❌ No |
+
+**The filename is your durable, portable tag.** It survives email, cloud sync, USB drives, and format conversions. EXIF is great for Spotlight. xattrs and SQLite are local bonuses.
+
+---
+
+## Tag Quality
+
+| File Type | Quality | Why |
 |---|---|---|
-| **Filename** | `date__tag1-tag2-tag3__original.ext` | ✅ Survives everything |
-| **EXIF** | `ImageDescription` with tags | ✅ Spotlight-indexed |
-| **xattrs** | `user.floomlens.labels` + `.json` | ⚠️ macOS/APFS only |
-| **SQLite** | Path, fingerprint, labels | ⚠️ Local DB only |
+| Screenshots with text | ✅ Excellent | OCR reads everything; vision provides layout context |
+| Documents & PDFs | ✅ Excellent | Text is dense and readable |
+| Receipts & invoices | ✅ Good | Numbers and merchant names are clear |
+| Photos without text | ⚠️ Generic | OCR returns empty; falls back to `['image']` |
+| Dense UI with tiny fonts | ⚠️ Mixed | Tesseract may misread; model tags the garbled text |
 
-The filename is your portable, durable tag. EXIF is great for Spotlight. xattrs are a bonus for macOS-native workflows.
+If tag quality feels off, try a bigger model (`llava:13b`) or a lighter variant (`llava-phi3`). The code is solid — the model is the ceiling.
 
-## Tag quality
+---
 
-**Great:** Screenshots, slides, memes, documents, receipts — anything with readable text. The hybrid approach (OCR + vision) cross-references text and layout for accurate tags.
-
-**Okay:** Photos without text. OCR returns empty, so the model isn't called. You get a generic fallback like `['image']`.
-
-**Weak:** Dense UI screenshots where tesseract misreads (low contrast, tiny fonts, icons mixed with text). The model may produce garbage from garbage OCR.
-
-If tag quality feels off, the fix is usually a bigger model (`llava:13b`) or a different vision variant (`llava-phi3`). The code is solid — the model is the ceiling.
-
-## Config options
+## Config Options
 
 ```json
 {
@@ -113,24 +163,50 @@ If tag quality feels off, the fix is usually a bigger model (`llava:13b`) or a d
 
 | Key | Description |
 |---|---|
-| `watch_dirs` | Directories to scan |
-| `rename` | Rename files with tags? |
-| `filename_format` | `{date}__{labels}__{orig}` + extension |
-| `max_labels` | 1–10 tags (default 4) |
+| `watch_dirs` | Directories to scan for new files |
+| `rename` | Rename files with generated tags? |
+| `filename_format` | Pattern: `{date}__{labels}__{orig}` + extension |
+| `max_labels` | 1–10 tags per file (default 4) |
 | `model` | Ollama vision model name |
 | `timeout` | Model inference timeout in seconds |
 | `recursive` | Scan subdirectories? |
 
-## Run manually
+---
+
+## Run Manually
 
 ```bash
-~/bin/auto_file_labeler.py
+~/bin/tagme
 ```
 
-Run tests:
+Run built-in tests:
 ```bash
-TEST=1 ~/bin/auto_file_labeler.py
+TEST=1 ~/bin/tagme
 ```
+
+---
+
+## FAQ
+
+**Q: Does it work on Apple Silicon?**  
+A: Yes. Tested on M2 Macs. Ollama uses the GPU for inference.
+
+**Q: Can I use a different model?**  
+A: Yes. Edit `~/.config/file-labeler/config.json` and change `model`. Any Ollama vision model works.
+
+**Q: Will it re-tag files already processed?**  
+A: No. It fingerprints files by content (size + mtime + inode), not path. Renamed files are not reprocessed.
+
+**Q: Does it delete or move files?**  
+A: No. It only renames and writes metadata. Original files are never deleted.
+
+**Q: Can I disable renaming and only write metadata?**  
+A: Yes. Set `"rename": false` in config.
+
+**Q: What about privacy?**  
+A: Everything is local. No cloud, no API keys, no data leaves your Mac.
+
+---
 
 ## License
 
