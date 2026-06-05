@@ -2,7 +2,7 @@
 
 Screenshots, downloads, and documents pile up. Finding the right file later is a pain.
 
-**Tagme** auto-labels your files using local OCR + a tiny AI model. It renames files with searchable tags and writes metadata so Spotlight and any agent can find them.
+**Tagme** auto-labels your files using local OCR + vision + a small AI model. It renames files with searchable tags and writes metadata so Spotlight and any agent can find them.
 
 ```
 IMG_4121.heic → 2026-06-05__finance-transactions-euro-credit__img-4121.png
@@ -11,10 +11,13 @@ IMG_4121.heic → 2026-06-05__finance-transactions-euro-credit__img-4121.png
 ## How it works
 
 1. **Scan** — Every 2 minutes, the daemon scans your watch directories
-2. **OCR** — Tesseract reads any text in images
-3. **Tag** — A local 1.5B model (Qwen via Ollama) turns that text into 4 content tags
-4. **Write** — Tags go into EXIF, xattrs, the filename, and a local SQLite DB
-5. **Search** — `mdfind` or any filename search finds your files instantly
+2. **OCR** — Tesseract reads text in images (fast, precise)
+3. **Vision** — A local vision model (Llava via Ollama) sees the image **and** the OCR text
+4. **Tag** — The model cross-references pixels + text to generate 4 content tags
+5. **Write** — Tags go into EXIF, xattrs, the filename, and a local SQLite DB
+6. **Search** — `mdfind` or any filename search finds your files instantly
+
+**Why hybrid?** Vision-only models ignore instructions and ramble. OCR-only misses visual context. Combining both grounds the model — it uses the text for precision and the image for context.
 
 ## Install (macOS)
 
@@ -27,8 +30,10 @@ brew install tesseract imagemagick exiftool ollama
 ### 2. Pull the model
 
 ```bash
-ollama pull qwen2.5:1.5b
+ollama pull llava:7b
 ```
+
+**Alternatives:** `llava-phi3` (2.9GB, faster) or `llava:13b` (8GB, slower but sharper).
 
 ### 3. Copy the script
 
@@ -80,13 +85,15 @@ xattr -p user.floomlens.labels ~/Desktop/2026-06-05__finance*.png
 
 The filename is your portable, durable tag. EXIF is great for Spotlight. xattrs are a bonus for macOS-native workflows.
 
-## How good are the tags?
+## Tag quality
 
-**Good:** Screenshots, slides, memes, documents, receipts — anything with readable text.
+**Great:** Screenshots, slides, memes, documents, receipts — anything with readable text. The hybrid approach (OCR + vision) cross-references text and layout for accurate tags.
 
-**Weak:** Photos, art, illustrations without text. OCR reads letters, not pixels. If there's no text, you get a generic fallback like `['image']`.
+**Okay:** Photos without text. OCR returns empty, so the model isn't called. You get a generic fallback like `['image']`.
 
-Want magic computer-vision tagging of any image? You'd need a vision model (GPT-4o, Llava, etc.) — this setup is intentionally zero-cost and offline.
+**Weak:** Dense UI screenshots where tesseract misreads (low contrast, tiny fonts, icons mixed with text). The model may produce garbage from garbage OCR.
+
+If tag quality feels off, the fix is usually a bigger model (`llava:13b`) or a different vision variant (`llava-phi3`). The code is solid — the model is the ceiling.
 
 ## Config options
 
@@ -97,9 +104,9 @@ Want magic computer-vision tagging of any image? You'd need a vision model (GPT-
   "rename": true,
   "filename_format": "{date}__{labels}__{orig}",
   "max_labels": 4,
-  "model": "qwen2.5:1.5b",
+  "model": "llava:7b",
   "endpoint": "http://127.0.0.1:11434/api/generate",
-  "timeout": 30,
+  "timeout": 60,
   "recursive": false
 }
 ```
@@ -110,7 +117,8 @@ Want magic computer-vision tagging of any image? You'd need a vision model (GPT-
 | `rename` | Rename files with tags? |
 | `filename_format` | `{date}__{labels}__{orig}` + extension |
 | `max_labels` | 1–10 tags (default 4) |
-| `model` | Ollama model name |
+| `model` | Ollama vision model name |
+| `timeout` | Model inference timeout in seconds |
 | `recursive` | Scan subdirectories? |
 
 ## Run manually

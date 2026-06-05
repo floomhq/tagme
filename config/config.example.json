@@ -8,9 +8,9 @@
   "rename": true,
   "filename_format": "{date}__{labels}__{orig}",
   "max_labels": 4,
-  "model": "qwen2.5:1.5b",
+  "model": "llava:7b",
   "endpoint": "http://127.0.0.1:11434/api/generate",
-  "timeout": 30,
+  "timeout": 60,
   "enabled_since": "2026-01-01T00:00:00",
   "recursive": false
 }

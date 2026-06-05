@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tagme — OCR → tiny text model → Spotlight-searchable tags."""
+import base64
 import datetime as dt
 import fcntl
 import hashlib
@@ -36,7 +37,7 @@ DEFAULT_CONFIG = {
     "filename_format": "{date}__{labels}__{orig}",
     "max_labels": 4,
     "enabled_since": dt.datetime.now().isoformat(timespec="seconds"),
-    "model": "qwen2.5:1.5b",
+    "model": "llava:7b",
     "endpoint": "http://127.0.0.1:11434/api/generate",
     "timeout": 30,
     "recursive": False,
@@ -293,23 +294,38 @@ def ocr_text(path: Path) -> str:
         return ""
 
 
-def model_tags(ocr_txt: str, cfg: dict) -> list[str]:
-    """Ask tiny text model to tag the OCR text. Returns [] on any failure."""
+def model_tags(ocr_txt: str, cfg: dict, image_path: Path | None = None) -> list[str]:
+    """Ask vision model to tag an image using OCR text as grounding. Returns [] on any failure."""
     if not ocr_txt.strip():
         return []
 
-    truncated = ocr_txt[:800].strip()
-    prompt = (
-        "What is this image about? Return exactly 4 lowercase content tags, "
-        "comma-separated, no explanations. No numbered lists.\n\n"
-        f"OCR text:\n{truncated}\n\nTags:"
-    )
-    payload = {
+    truncated = ocr_txt[:800].strip() if ocr_txt else ""
+    if truncated:
+        prompt = (
+            "What is this image about? OCR text from image:\n"
+            f"{truncated}\n\n"
+            "Return exactly 4 lowercase content tags, comma-separated, "
+            "no explanations. No numbered lists.\n\nTags:"
+        )
+    else:
+        prompt = (
+            "What is this image about? Return exactly 4 lowercase content tags, "
+            "comma-separated, no explanations. No numbered lists.\n\nTags:"
+        )
+
+    payload: dict = {
         "model": cfg["model"],
         "prompt": prompt,
         "stream": False,
         "options": {"temperature": 0.0},
     }
+    if image_path and image_path.exists():
+        try:
+            with image_path.open("rb") as f:
+                payload["images"] = [base64.b64encode(f.read()).decode("utf-8")]
+        except OSError as e:
+            log(f"model failed to read image: {type(e).__name__}: {e}")
+
     req = urllib.request.Request(
         cfg["endpoint"],
         data=json.dumps(payload).encode("utf-8"),
@@ -506,13 +522,14 @@ def process_file(path: Path, cfg: dict, conn: sqlite3.Connection) -> tuple[bool,
             log(f"skip OCR {path.name}: file exceeds 50MB")
         else:
             txt = ocr_text(path)
-            if txt.strip():
-                ai_tags = model_tags(txt, cfg)
-                if not ai_tags:
+            ai_tags = model_tags(txt, cfg, image_path=path)
+            if not ai_tags:
+                if txt.strip():
                     log(f"model returned no tags for {path.name}")
-                labels.extend(ai_tags)
+                else:
+                    log(f"OCR empty for {path.name}")
             else:
-                log(f"OCR empty for {path.name}")
+                labels.extend(ai_tags)
     else:
         labels.extend(name_hints(path))
 
