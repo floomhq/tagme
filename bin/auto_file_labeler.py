@@ -49,7 +49,7 @@ AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".flac"}
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm"}
 CODE_EXTS = {".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".sh", ".json", ".yml", ".yaml"}
 TEMP_SUFFIXES = {".download", ".crdownload", ".part", ".tmp", ".temp", ".icloud"}
-GENERIC = {"image", "text", "screenshot", "screen", "photo", "picture", "graphic", "file", "app", "website", "webpage", "ui", "page"}
+GENERIC = {"image", "text", "screenshot", "screen", "photo", "picture", "graphic", "file", "app", "website", "webpage", "ui", "page", "ocr-result", "ocr-text", "ocr-results"}
 MAX_IMAGE_OCR_BYTES = 50 * 1024 * 1024
 REQUIRED_BINARIES = {
     "magick": "/opt/homebrew/bin/magick",
