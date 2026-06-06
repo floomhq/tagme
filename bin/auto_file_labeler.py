@@ -7,6 +7,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 
 import shutil
 import sqlite3
@@ -488,11 +489,41 @@ def should_ignore(path: Path, cfg: dict) -> bool:
     return False
 
 
+def is_fresh_screenshot(path: Path) -> bool:
+    """Return True only for images that look like fresh screenshots or generic camera/WhatsApp images."""
+    stem = path.stem
+    # Skip files already renamed by this tool (date__labels__orig format)
+    if "__" in stem:
+        parts = stem.split("__")
+        if len(parts) >= 2 and len(parts[0]) == 10 and parts[0][4] == "-" and parts[0][7] == "-":
+            return False
+    lower = stem.lower()
+    patterns = (
+        "screenshot ", "screen shot ", "img_", "whatsapp image", "pxl_",
+        "dsc_", "mvimg_", "image", "photo", "pic", "picture", "img-",
+    )
+    if any(lower.startswith(p) for p in patterns):
+        return True
+    # Numeric-only or timestamp-only stems (common for downloads / camera dumps)
+    if re.fullmatch(r"\d{13,}", stem):
+        return True
+    if re.fullmatch(r"\d{8}_\d{6}", stem):
+        return True
+    if re.fullmatch(r"100\d{6,}", stem):
+        return True
+    return False
+
+
 def process_file(path: Path, cfg: dict, conn: sqlite3.Connection) -> tuple[bool, bool]:
     if not path.is_file() or path.is_symlink() or should_ignore(path, cfg):
         return False, False
     ext = path.suffix.lower()
     if ext in TEMP_SUFFIXES:
+        return False, False
+    # Only process image files that look like fresh screenshots / generic camera images
+    if ext not in IMAGE_EXTS:
+        return False, False
+    if not is_fresh_screenshot(path):
         return False, False
     enabled_since = cfg.get("enabled_since")
     if enabled_since:
