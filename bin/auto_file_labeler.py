@@ -693,9 +693,9 @@ def write_finder_tags(path: Path, labels: list[str], cfg: dict) -> bool:
 
 
 def write_doc_metadata(path: Path, labels: list[str], cfg: dict) -> bool:
+    write_pdf_keywords(path, labels, cfg)
     if not write_xattrs(path, labels):
         return False
-    write_pdf_keywords(path, labels, cfg)
     write_finder_tags(path, labels, cfg)
     index_spotlight(path)
     return True
