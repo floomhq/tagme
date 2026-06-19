@@ -44,6 +44,9 @@ DEFAULT_CONFIG = {
     "timeout": 30,
     "recursive": False,
     "process_docs": True,
+    "doc_rename": "never",
+    "doc_finder_tags": False,
+    "doc_pdf_keywords": True,
 }
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic"}
@@ -59,9 +62,10 @@ MAX_IMAGE_OCR_BYTES = 50 * 1024 * 1024
 MAX_DOC_TEXT_BYTES = 10 * 1024 * 1024
 MAX_DOC_EXCERPT_CHARS = 2000
 GENERIC_DOC_STEMS = {
-    "document", "untitled", "scan", "scanned", "file", "download", "notes",
-    "new", "copy", "temp", "draft", "export", "report", "invoice", "receipt",
+    "document", "untitled", "scan", "scanned", "file", "download",
+    "new", "copy", "temp", "draft",
 }
+FINDER_TAG_XATTR = "com.apple.metadata:_kMDItemUserTags"
 MAX_DOCX_XML_BYTES = 2 * 1024 * 1024
 REQUIRED_BINARIES = {
     "magick": "/opt/homebrew/bin/magick",
@@ -199,6 +203,30 @@ def validate_config(cfg: dict) -> dict:
         else:
             log(f"warning: invalid config process_docs, coerced to {coerced}")
             cfg["process_docs"] = coerced
+
+    doc_rename = cfg.get("doc_rename")
+    if doc_rename not in {"never", "generic_only"}:
+        log("warning: invalid config doc_rename, using default")
+        cfg["doc_rename"] = DEFAULT_CONFIG["doc_rename"]
+
+    for flag in ("doc_finder_tags", "doc_pdf_keywords"):
+        value = cfg.get(flag)
+        if not isinstance(value, bool):
+            coerced = None
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in {"true", "1", "yes", "on"}:
+                    coerced = True
+                elif lowered in {"false", "0", "no", "off"}:
+                    coerced = False
+            elif isinstance(value, int) and value in (0, 1):
+                coerced = bool(value)
+            if coerced is None:
+                log(f"warning: invalid config {flag}, using default")
+                cfg[flag] = DEFAULT_CONFIG[flag]
+            else:
+                log(f"warning: invalid config {flag}, coerced to {coerced}")
+                cfg[flag] = coerced
 
     return cfg
 
@@ -599,6 +627,84 @@ def write_xattrs(path: Path, labels: list[str]) -> bool:
     return True
 
 
+def already_enriched(path: Path) -> bool:
+    try:
+        proc = subprocess.run(
+            [resolve_bin("xattr"), "-p", "user.floomlens.labels", str(path)],
+            check=False, capture_output=True, text=True, timeout=5,
+        )
+        return proc.returncode == 0 and bool(proc.stdout.strip())
+    except (subprocess.SubprocessError, OSError, FileNotFoundError):
+        return False
+
+
+def exiftool_field(path: Path, field: str) -> str:
+    try:
+        proc = subprocess.run(
+            [resolve_bin("exiftool"), f"-{field}", "-s3", str(path)],
+            check=False, capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode == 0:
+            return proc.stdout.strip()
+    except (subprocess.SubprocessError, OSError, FileNotFoundError):
+        pass
+    return ""
+
+
+def write_pdf_keywords(path: Path, labels: list[str], cfg: dict) -> bool:
+    if not cfg.get("doc_pdf_keywords", True) or path.suffix.lower() != ".pdf":
+        return True
+    if exiftool_field(path, "PDF:Keywords") or exiftool_field(path, "Subject"):
+        return True
+    joined = ", ".join(labels)
+    try:
+        proc = subprocess.run(
+            [
+                resolve_bin("exiftool"), "-q", "-overwrite_original",
+                f"-PDF:Keywords={joined}", f"-Subject={joined}", str(path),
+            ],
+            check=False, capture_output=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            err = proc.stderr.decode("utf-8", errors="replace").strip()[:200] or "unknown error"
+            log(f"pdf keywords skipped for {path.name}: exit {proc.returncode}: {err}")
+    except (subprocess.SubprocessError, OSError, FileNotFoundError) as e:
+        log(f"pdf keywords skipped for {path.name}: {type(e).__name__}: {e}")
+    return True
+
+
+def write_finder_tags(path: Path, labels: list[str], cfg: dict) -> bool:
+    if not cfg.get("doc_finder_tags", False):
+        return True
+    tag_bin = shutil.which("tag")
+    if not tag_bin:
+        return True
+    try:
+        proc = subprocess.run(
+            [tag_bin, "-a", *labels, str(path)],
+            check=False, capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            err = proc.stderr.strip()[:200] or "unknown error"
+            log(f"finder tags skipped for {path.name}: exit {proc.returncode}: {err}")
+    except (subprocess.SubprocessError, OSError, FileNotFoundError) as e:
+        log(f"finder tags skipped for {path.name}: {type(e).__name__}: {e}")
+    return True
+
+
+def write_doc_metadata(path: Path, labels: list[str], cfg: dict) -> bool:
+    if not write_xattrs(path, labels):
+        return False
+    write_pdf_keywords(path, labels, cfg)
+    write_finder_tags(path, labels, cfg)
+    index_spotlight(path)
+    return True
+
+
+def should_rename_doc(path: Path, cfg: dict) -> bool:
+    return cfg.get("doc_rename") == "generic_only" and is_generic_document_name(path)
+
+
 def unique_path(path: Path) -> Path:
     if not path.exists():
         return path
@@ -611,8 +717,11 @@ def unique_path(path: Path) -> Path:
         i += 1
 
 
-def maybe_rename(path: Path, labels: list[str], cfg: dict) -> Path:
-    if not cfg.get("rename", True):
+def maybe_rename(path: Path, labels: list[str], cfg: dict, *, kind: str = "image") -> Path:
+    if kind == "doc":
+        if not should_rename_doc(path, cfg):
+            return path
+    elif not cfg.get("rename", True):
         return path
     date = dt.datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
     label_str = "-".join(labels[: cfg.get("max_labels", 4)]) or "file"
@@ -682,18 +791,18 @@ def is_fresh_screenshot(path: Path) -> bool:
     return False
 
 
-def is_fresh_document(path: Path) -> bool:
-    """Return True for docs with generic/downloaded filenames worth auto-labeling."""
-    if is_already_tagged(path):
-        return False
+def is_generic_document_name(path: Path) -> bool:
     stem = path.stem.lower()
     if stem in GENERIC_DOC_STEMS:
         return True
-    if stem.startswith(("document", "untitled", "scan", "file ", "download")):
-        return True
-    if re.fullmatch(r"\d{13,}", path.stem):
-        return True
-    return False
+    return stem.startswith(("document", "untitled", "scan", "file ", "download"))
+
+
+def is_fresh_document(path: Path) -> bool:
+    """Return True only for docs with obviously worthless filenames."""
+    if is_already_tagged(path) or already_enriched(path):
+        return False
+    return is_generic_document_name(path)
 
 
 def file_kind(path: Path, cfg: dict) -> str | None:
@@ -742,6 +851,7 @@ def process_file(path: Path, cfg: dict, conn: sqlite3.Connection) -> tuple[bool,
             return False, False
 
     labels = [base_label(path)]
+    ai_tags: list[str] = []
 
     if kind == "image":
         if path.stat().st_size > MAX_IMAGE_OCR_BYTES:
@@ -759,17 +869,14 @@ def process_file(path: Path, cfg: dict, conn: sqlite3.Connection) -> tuple[bool,
     else:
         if path.stat().st_size > MAX_DOC_TEXT_BYTES:
             log(f"skip doc text {path.name}: file exceeds 10MB")
-        else:
-            txt = extract_doc_text(path)
-            ai_tags = text_model_tags(txt, cfg)
-            if not ai_tags:
-                if txt.strip():
-                    log(f"model returned no tags for {path.name}")
-                else:
-                    log(f"doc text empty for {path.name}")
-                labels.extend(name_hints(path))
-            else:
-                labels.extend(ai_tags)
+            return False, False
+        txt = extract_doc_text(path)
+        if not txt.strip():
+            return False, False
+        ai_tags = text_model_tags(txt, cfg)
+        if not ai_tags:
+            return False, False
+        labels.extend(ai_tags)
 
     # Deduplicate and sanitize
     uniq = []
@@ -810,11 +917,10 @@ def process_file(path: Path, cfg: dict, conn: sqlite3.Connection) -> tuple[bool,
                 pass
             return False, True
     else:
-        if not write_xattrs(path, uniq):
-            log(f"warning: metadata write failed for {path.name}, skipping rename and DB update")
+        if not write_doc_metadata(path, uniq, cfg):
             return False, True
 
-    new_path = maybe_rename(path, uniq, cfg)
+    new_path = maybe_rename(path, uniq, cfg, kind=kind)
     metadata_failed = False
 
     if kind == "image":
@@ -845,7 +951,7 @@ def process_file(path: Path, cfg: dict, conn: sqlite3.Connection) -> tuple[bool,
     )
     if str(new_path) != str(path):
         conn.execute("DELETE FROM files WHERE path = ?", (str(path),))
-    log(f"labeled: {new_path.name} -> {uniq}")
+    log(f"{'labeled' if kind == 'image' else 'enriched'}: {new_path.name} -> {uniq}")
     return True, metadata_failed
 
 
@@ -1002,14 +1108,26 @@ def __test__() -> int:
     assert is_fresh_document(tagged) is False
     assert is_fresh_document(Path("document.pdf")) is True
     assert is_fresh_document(Path("hiring-contract-2026.pdf")) is False
+    assert is_fresh_document(Path("a8f3k2j1.pdf")) is False
     assert is_fresh_screenshot(Path("Screenshot 2026-06-05 at 11.54.13 AM.png")) is True
+    assert should_rename_doc(Path("document.pdf"), {"doc_rename": "never"}) is False
+    assert should_rename_doc(Path("document.pdf"), {"doc_rename": "generic_only"}) is True
 
     with tempfile.TemporaryDirectory() as td:
-        note = Path(td) / "notes.md"
-        note.write_text("# Hiring\nSales pipeline summary\n", encoding="utf-8")
-        assert "hiring" in extract_plain_text(note).lower()
+        note = Path(td) / "document.pdf"
+        note.write_bytes(b"%PDF-1.4 placeholder")
+        assert file_kind(note, {"process_docs": True}) == "doc"
+        assert file_kind(Path(td) / "hiring-contract-2026.pdf", {"process_docs": True}) is None
+        assert file_kind(Path("Screenshot 2026-05-01.png"), {"process_docs": True}) == "image"
+        assert file_kind(note, {"process_docs": False}) is None
+        assert file_kind(Path(td) / "notes.md", {"process_docs": True}) is None
 
-        docx = Path(td) / "report.docx"
+        plain = Path(td) / "untitled.md"
+        plain.write_text("# Hiring\nSales pipeline summary\n", encoding="utf-8")
+        assert "hiring" in extract_plain_text(plain).lower()
+        assert file_kind(plain, {"process_docs": True}) == "doc"
+
+        docx = Path(td) / "document.docx"
         with zipfile.ZipFile(docx, "w") as zf:
             zf.writestr(
                 "word/document.xml",
@@ -1019,11 +1137,6 @@ def __test__() -> int:
                 "</w:document>",
             )
         assert "revenue" in extract_docx_text(docx).lower()
-
-        assert file_kind(note, {"process_docs": True}) == "doc"
-        assert file_kind(Path(td) / "hiring-contract-2026.pdf", {"process_docs": True}) is None
-        assert file_kind(Path("Screenshot 2026-05-01.png"), {"process_docs": True}) == "image"
-        assert file_kind(note, {"process_docs": False}) is None
 
     print("tests passed")
     return 0

@@ -13,5 +13,8 @@
   "timeout": 60,
   "enabled_since": "2026-01-01T00:00:00",
   "recursive": false,
-  "process_docs": true
+  "process_docs": true,
+  "doc_rename": "never",
+  "doc_finder_tags": false,
+  "doc_pdf_keywords": true
 }

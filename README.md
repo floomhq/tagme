@@ -33,15 +33,14 @@ Tagme reads the text on screen, understands the context, and writes tags into th
 
 ### Documents (v0.2)
 
-| Before | After |
+| Before | After (filename unchanged) |
 |---|---|
-| `document.pdf` | `2026-06-05__hiring-contract-onboarding__document.pdf` |
-| `Untitled.docx` | `2026-06-05__quarterly-revenue-report__untitled.docx` |
-| `notes.md` | `2026-06-05__product-roadmap-q3__notes.md` |
+| `document.pdf` | `document.pdf` + searchable metadata |
+| `Untitled.docx` | `Untitled.docx` + searchable metadata |
 
-![Document rename demo](docs/examples/doc-rename.gif)
+Tags are written to xattrs and PDF Keywords/Subject (Spotlight). Filename stays the same unless you set `doc_rename: generic_only`.
 
-Docs use text extraction (not vision). Only generic filenames are processed — files you already named well are left alone.
+![Document enrich demo](docs/examples/doc-rename.gif)
 
 ---
 
@@ -49,10 +48,23 @@ Docs use text extraction (not vision). Only generic filenames are processed — 
 
 | Version | Scope | Status |
 |---|---|---|
-| **v0.1** | Screenshots & generic camera images (OCR + vision) | Shipped |
-| **v0.2** | Documents on ingest: `.pdf`, `.docx`, `.txt`, `.md` (text extraction) | Shipped |
+| **v0.1** | Screenshots & generic camera images (OCR + vision, rename) | Shipped |
+| **v0.2** | Docs with junk names only: enrich metadata, keep filename | Shipped |
 
-Tagme watches for **new files with generic names** — not your entire archive. Files you already named intentionally are left alone.
+Tagme watches for **new files with useless names**. Files you already named well are never touched.
+
+### Safety rules (docs)
+
+- **Never renames docs by default** (`doc_rename: never`)
+- Only touches obvious junk: `document.pdf`, `Untitled.docx`, `scan.pdf`
+- Skips meaningful names like `Q3-Report-Acme.pdf`
+- Skips random strings like `a8f3k2j1.pdf`
+- Skips files already enriched (won't re-tag)
+- Skips if it can't extract text or get good tags (no garbage labels)
+- Never deletes files
+- PDF Keywords only written if empty (won't overwrite yours)
+
+Screenshots are different: those names are useless, so rename is the feature.
 
 ---
 
@@ -78,13 +90,11 @@ Tagme watches for **new files with generic names** — not your entire archive. 
 6. **Search** — Spotlight (`mdfind`), Finder, terminal, or any AI agent
 
 ### Documents (v0.2)
-1. **Detect** — Generic doc names like `document.pdf`, `Untitled.docx`, `scan.pdf`
-2. **Extract** — Text from `.txt`/`.md` directly; `.pdf` via `pdftotext` or macOS `textutil`; `.docx` via built-in parser
-3. **Tag** — Local text model generates 4 content tags (no vision)
-4. **Write** — Tags go into **filename**, **xattrs**, and SQLite
-5. **Search** — Finder and terminal by filename; xattrs for programmatic access
-
-**Docs do not get EXIF metadata.** Spotlight content search for docs relies on macOS's native indexing of the renamed filename.
+1. **Detect** — Only junk doc names like `document.pdf`, `Untitled.docx`, `scan.pdf`
+2. **Extract** — Text from `.txt`/`.md` directly; `.pdf` via `pdftotext` or `textutil`; `.docx` via built-in parser
+3. **Tag** — Local text model generates 4 content tags (no vision). Skips if tags aren't good enough.
+4. **Enrich** — Tags go into **xattrs** and **PDF Keywords** (if empty). Filename unchanged by default.
+5. **Search** — Spotlight picks up PDF keywords; terminal/agents can read xattrs
 
 ---
 
@@ -163,7 +173,10 @@ xattr -p user.floomlens.labels ~/Desktop/2026-06-05__finance*.png
   "endpoint": "http://127.0.0.1:11434/api/generate",
   "timeout": 60,
   "recursive": false,
-  "process_docs": true
+  "process_docs": true,
+  "doc_rename": "never",
+  "doc_finder_tags": false,
+  "doc_pdf_keywords": true
 }
 ```
 
@@ -176,7 +189,10 @@ xattr -p user.floomlens.labels ~/Desktop/2026-06-05__finance*.png
 | `model` | Ollama model name (vision for images, text for docs) |
 | `timeout` | Model inference timeout in seconds |
 | `recursive` | Scan subdirectories? |
-| `process_docs` | Enable v0.2 document labeling (`.pdf`, `.docx`, `.txt`, `.md`) |
+| `process_docs` | Enable v0.2 document enrichment (`.pdf`, `.docx`, `.txt`, `.md`) |
+| `doc_rename` | `never` (default) or `generic_only` |
+| `doc_finder_tags` | Write visible Finder tags (off by default) |
+| `doc_pdf_keywords` | Write PDF Keywords/Subject when empty (on by default) |
 
 ---
 
@@ -202,7 +218,10 @@ A: Yes. Tested on M2 Macs. Ollama uses the GPU for inference.
 A: No. It fingerprints files by content (size + mtime + inode). Renamed files are not reprocessed.
 
 **Q: Will it rename files I already named well?**  
-A: No. Only generic filenames (`Screenshot …`, `document.pdf`, `IMG_…`, etc.) are processed.
+A: No. Docs keep their filename by default. Only obvious junk names get enriched. Screenshots with useless names get renamed.
+
+**Q: Will it touch my `Q3-Report.pdf`?**  
+A: No. Meaningful filenames are skipped entirely.
 
 **Q: Can it search my old buried documents?**  
 A: Not yet. Tagme labels new files on ingest. Retroactive backfill is planned.
