@@ -12,5 +12,6 @@
   "endpoint": "http://127.0.0.1:11434/api/generate",
   "timeout": 60,
   "enabled_since": "2026-01-01T00:00:00",
-  "recursive": false
+  "recursive": false,
+  "process_docs": true
 }

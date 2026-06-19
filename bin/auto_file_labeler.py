@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tagme — OCR → tiny text model → Spotlight-searchable tags."""
+"""Tagme — OCR/vision for screenshots, text extraction for docs → searchable tags."""
 import base64
 import datetime as dt
 import fcntl
@@ -8,7 +8,6 @@ import json
 import mimetypes
 import os
 import re
-
 import shutil
 import sqlite3
 import subprocess
@@ -17,6 +16,8 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 os.umask(0o077)
@@ -42,10 +43,12 @@ DEFAULT_CONFIG = {
     "endpoint": "http://127.0.0.1:11434/api/generate",
     "timeout": 30,
     "recursive": False,
+    "process_docs": True,
 }
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic"}
 DOC_EXTS = {".pdf", ".doc", ".docx", ".txt", ".md", ".rtf", ".pages"}
+DOC_V02_EXTS = {".pdf", ".docx", ".txt", ".md"}
 SHEET_EXTS = {".csv", ".tsv", ".xls", ".xlsx"}
 AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".flac"}
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm"}
@@ -53,6 +56,13 @@ CODE_EXTS = {".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".sh", ".json
 TEMP_SUFFIXES = {".download", ".crdownload", ".part", ".tmp", ".temp", ".icloud"}
 GENERIC = {"image", "text", "screenshot", "screen", "photo", "picture", "graphic", "file", "app", "website", "webpage", "ui", "page", "ocr-result", "ocr-text", "ocr-results"}
 MAX_IMAGE_OCR_BYTES = 50 * 1024 * 1024
+MAX_DOC_TEXT_BYTES = 10 * 1024 * 1024
+MAX_DOC_EXCERPT_CHARS = 2000
+GENERIC_DOC_STEMS = {
+    "document", "untitled", "scan", "scanned", "file", "download", "notes",
+    "new", "copy", "temp", "draft", "export", "report", "invoice", "receipt",
+}
+MAX_DOCX_XML_BYTES = 2 * 1024 * 1024
 REQUIRED_BINARIES = {
     "magick": "/opt/homebrew/bin/magick",
     "tesseract": "/opt/homebrew/bin/tesseract",
@@ -60,6 +70,8 @@ REQUIRED_BINARIES = {
     "xattr": "/usr/bin/xattr",
     "mdimport": "/usr/bin/mdimport",
 }
+IMAGE_PIPELINE_BINARIES = ("magick", "tesseract", "exiftool", "xattr")
+DOC_PIPELINE_BINARIES = ("xattr",)
 
 
 def resolve_bin(name: str) -> str:
@@ -170,19 +182,62 @@ def validate_config(cfg: dict) -> dict:
         log("warning: invalid config recursive, using default")
         cfg["recursive"] = DEFAULT_CONFIG["recursive"]
 
+    process_docs = cfg.get("process_docs")
+    if not isinstance(process_docs, bool):
+        coerced = None
+        if isinstance(process_docs, str):
+            value = process_docs.strip().lower()
+            if value in {"true", "1", "yes", "on"}:
+                coerced = True
+            elif value in {"false", "0", "no", "off"}:
+                coerced = False
+        elif isinstance(process_docs, int) and process_docs in (0, 1):
+            coerced = bool(process_docs)
+        if coerced is None:
+            log("warning: invalid config process_docs, using default")
+            cfg["process_docs"] = DEFAULT_CONFIG["process_docs"]
+        else:
+            log(f"warning: invalid config process_docs, coerced to {coerced}")
+            cfg["process_docs"] = coerced
+
     return cfg
 
 
-def dependencies_available() -> bool:
+def missing_binaries(names: tuple[str, ...]) -> list[str]:
     missing = []
-    for name in REQUIRED_BINARIES:
+    for name in names:
         bin_path = resolve_bin(name)
         if not Path(bin_path).exists() and not shutil.which(bin_path):
             missing.append(name)
-    if missing:
-        log(f"warning: missing required binaries, skipping scan: {', '.join(missing)}")
-        return False
-    return True
+    return missing
+
+
+def image_pipeline_ready() -> bool:
+    return not missing_binaries(IMAGE_PIPELINE_BINARIES)
+
+
+def doc_pipeline_ready() -> bool:
+    return not missing_binaries(DOC_PIPELINE_BINARIES)
+
+
+def dependencies_available(cfg: dict) -> bool:
+    image_ok = image_pipeline_ready()
+    doc_ok = doc_pipeline_ready()
+    process_docs = cfg.get("process_docs", True)
+
+    if image_ok or (process_docs and doc_ok):
+        if process_docs and doc_ok and not image_ok:
+            log(
+                "warning: image pipeline unavailable "
+                f"({', '.join(missing_binaries(IMAGE_PIPELINE_BINARIES))}), running docs-only mode"
+            )
+        return True
+
+    missing = sorted(
+        set(missing_binaries(IMAGE_PIPELINE_BINARIES) + missing_binaries(DOC_PIPELINE_BINARIES))
+    )
+    log(f"warning: missing required binaries, skipping scan: {', '.join(missing)}")
+    return False
 
 
 def db() -> sqlite3.Connection:
@@ -263,6 +318,108 @@ def name_hints(path: Path) -> list[str]:
     return [b for b in bits if b not in stop][:2]
 
 
+def parse_model_tags(resp: str) -> list[str]:
+    if len(resp.split()) > 12 or "\n" in resp:
+        return []
+    tags = []
+    for t in resp.split(","):
+        if any(t[i] == "." and i > 0 and t[i - 1].isdigit() for i in range(len(t))):
+            continue
+        t = clean(t)
+        if t and t not in GENERIC and len(t) >= 2 and not t.isdigit():
+            if t[0].isdigit():
+                rest = t.lstrip("0123456789")
+                if not rest or rest[0] == "-":
+                    continue
+            tags.append(t)
+    return tags[:4]
+
+
+def extract_plain_text(path: Path) -> str:
+    for enc in ("utf-8", "utf-16", "latin-1"):
+        try:
+            return path.read_text(encoding=enc)
+        except (UnicodeDecodeError, OSError):
+            continue
+    return ""
+
+
+def extract_pdf_text(path: Path) -> str:
+    pdftotext = shutil.which("pdftotext")
+    if pdftotext:
+        try:
+            proc = subprocess.run(
+                [pdftotext, "-q", str(path), "-"],
+                check=False, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30,
+            )
+            if proc.returncode == 0:
+                return proc.stdout
+            err = proc.stderr.strip()[:200] or "unknown error"
+            log(f"pdftotext failed for {path.name}: exit {proc.returncode}: {err}")
+        except (subprocess.SubprocessError, OSError, FileNotFoundError) as e:
+            log(f"pdftotext failed for {path.name}: {type(e).__name__}: {e}")
+
+    textutil = shutil.which("textutil")
+    if textutil:
+        try:
+            proc = subprocess.run(
+                [textutil, "-convert", "txt", "-stdout", str(path)],
+                check=False, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30,
+            )
+            if proc.returncode == 0:
+                return proc.stdout
+            err = proc.stderr.strip()[:200] or "unknown error"
+            log(f"textutil failed for {path.name}: exit {proc.returncode}: {err}")
+        except (subprocess.SubprocessError, OSError, FileNotFoundError) as e:
+            log(f"textutil failed for {path.name}: {type(e).__name__}: {e}")
+    else:
+        log(f"skip PDF text for {path.name}: pdftotext/textutil not found")
+    return ""
+
+
+def read_zip_member_limited(zf: zipfile.ZipFile, name: str, limit: int) -> bytes:
+    with zf.open(name) as handle:
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = handle.read(65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                raise ValueError(f"{name} exceeds {limit} bytes decompressed")
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def extract_docx_text(path: Path) -> str:
+    try:
+        with zipfile.ZipFile(path) as zf:
+            xml = read_zip_member_limited(zf, "word/document.xml", MAX_DOCX_XML_BYTES)
+        root = ET.fromstring(xml)
+        texts = []
+        for el in root.iter():
+            if el.tag.endswith("}t") and el.text:
+                texts.append(el.text)
+        return " ".join(texts)
+    except (OSError, KeyError, zipfile.BadZipFile, ET.ParseError, ValueError) as e:
+        log(f"docx extract failed for {path.name}: {type(e).__name__}: {e}")
+        return ""
+
+
+def extract_doc_text(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext in {".txt", ".md"}:
+        return extract_plain_text(path)
+    if ext == ".pdf":
+        return extract_pdf_text(path)
+    if ext == ".docx":
+        return extract_docx_text(path)
+    return ""
+
+
 def ocr_text(path: Path) -> str:
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -300,20 +457,34 @@ def model_tags(ocr_txt: str, cfg: dict, image_path: Path | None = None) -> list[
     if not ocr_txt.strip():
         return []
 
-    truncated = ocr_txt[:800].strip() if ocr_txt else ""
-    if truncated:
-        prompt = (
-            "What is this image about? OCR text from image:\n"
-            f"{truncated}\n\n"
-            "Return exactly 4 lowercase content tags, comma-separated, "
-            "no explanations. No numbered lists.\n\nTags:"
-        )
-    else:
-        prompt = (
-            "What is this image about? Return exactly 4 lowercase content tags, "
-            "comma-separated, no explanations. No numbered lists.\n\nTags:"
-        )
+    truncated = ocr_txt[:800].strip()
+    prompt = (
+        "What is this image about? OCR text from image:\n"
+        f"{truncated}\n\n"
+        "Return exactly 4 lowercase content tags, comma-separated, "
+        "no explanations. No numbered lists.\n\nTags:"
+    ) if truncated else (
+        "What is this image about? Return exactly 4 lowercase content tags, "
+        "comma-separated, no explanations. No numbered lists.\n\nTags:"
+    )
+    return _query_model_tags(prompt, cfg, image_path=image_path)
 
+
+def text_model_tags(doc_txt: str, cfg: dict) -> list[str]:
+    """Tag a document from extracted text only (no vision). Returns [] on any failure."""
+    if not doc_txt.strip():
+        return []
+    truncated = doc_txt[:MAX_DOC_EXCERPT_CHARS].strip()
+    prompt = (
+        "What is this document about? Text excerpt:\n"
+        f"{truncated}\n\n"
+        "Return exactly 4 lowercase content tags, comma-separated, "
+        "no explanations. No numbered lists.\n\nTags:"
+    )
+    return _query_model_tags(prompt, cfg, image_path=None)
+
+
+def _query_model_tags(prompt: str, cfg: dict, image_path: Path | None = None) -> list[str]:
     payload: dict = {
         "model": cfg["model"],
         "prompt": prompt,
@@ -336,22 +507,7 @@ def model_tags(ocr_txt: str, cfg: dict, image_path: Path | None = None) -> list[
     try:
         with urllib.request.urlopen(req, timeout=cfg.get("timeout", 30)) as r:
             data = json.loads(r.read().decode("utf-8"))
-        resp = data.get("response", "").strip()
-        # Sanity check: reject prose / templates / numbered lists
-        if len(resp.split()) > 12 or "\n" in resp:
-            return []
-        tags = []
-        for t in resp.split(","):
-            if any(t[i] == "." and i > 0 and t[i - 1].isdigit() for i in range(len(t))):
-                continue
-            t = clean(t)
-            if t and t not in GENERIC and len(t) >= 2 and not t.isdigit():
-                if t[0].isdigit():
-                    rest = t.lstrip("0123456789")
-                    if not rest or rest[0] == "-":
-                        continue
-                tags.append(t)
-        return tags[:4]
+        return parse_model_tags(data.get("response", "").strip())
     except (urllib.error.URLError, json.JSONDecodeError, KeyError, UnicodeDecodeError) as e:
         log(f"model failed: {type(e).__name__}: {e}")
         return []
@@ -400,7 +556,7 @@ def write_xattrs(path: Path, labels: list[str]) -> bool:
         {
             "labels": labels,
             "labeled_at": dt.datetime.now().isoformat(timespec="seconds"),
-            "tool": "floomlens",
+            "tool": "tagme",
         },
         separators=(",", ":"),
     )
@@ -489,14 +645,27 @@ def should_ignore(path: Path, cfg: dict) -> bool:
     return False
 
 
+def is_already_tagged(path: Path) -> bool:
+    stem = path.stem
+    if "__" not in stem:
+        return False
+    parts = stem.split("__")
+    return (
+        len(parts) >= 2
+        and len(parts[0]) == 10
+        and parts[0][4] == "-"
+        and parts[0][7] == "-"
+        and parts[0][:4].isdigit()
+        and parts[0][5:7].isdigit()
+        and parts[0][8:10].isdigit()
+    )
+
+
 def is_fresh_screenshot(path: Path) -> bool:
     """Return True only for images that look like fresh screenshots or generic camera/WhatsApp images."""
+    if is_already_tagged(path):
+        return False
     stem = path.stem
-    # Skip files already renamed by this tool (date__labels__orig format)
-    if "__" in stem:
-        parts = stem.split("__")
-        if len(parts) >= 2 and len(parts[0]) == 10 and parts[0][4] == "-" and parts[0][7] == "-":
-            return False
     lower = stem.lower()
     patterns = (
         "screenshot ", "screen shot ", "img_", "whatsapp image", "pxl_",
@@ -504,7 +673,6 @@ def is_fresh_screenshot(path: Path) -> bool:
     )
     if any(lower.startswith(p) for p in patterns):
         return True
-    # Numeric-only or timestamp-only stems (common for downloads / camera dumps)
     if re.fullmatch(r"\d{13,}", stem):
         return True
     if re.fullmatch(r"\d{8}_\d{6}", stem):
@@ -514,17 +682,44 @@ def is_fresh_screenshot(path: Path) -> bool:
     return False
 
 
+def is_fresh_document(path: Path) -> bool:
+    """Return True for docs with generic/downloaded filenames worth auto-labeling."""
+    if is_already_tagged(path):
+        return False
+    stem = path.stem.lower()
+    if stem in GENERIC_DOC_STEMS:
+        return True
+    if stem.startswith(("document", "untitled", "scan", "file ", "download")):
+        return True
+    if re.fullmatch(r"\d{13,}", path.stem):
+        return True
+    return False
+
+
+def file_kind(path: Path, cfg: dict) -> str | None:
+    ext = path.suffix.lower()
+    if ext in IMAGE_EXTS and is_fresh_screenshot(path):
+        if not image_pipeline_ready():
+            return None
+        return "image"
+    if ext in DOC_V02_EXTS and cfg.get("process_docs", True) and is_fresh_document(path):
+        if not doc_pipeline_ready():
+            return None
+        return "doc"
+    return None
+
+
 def process_file(path: Path, cfg: dict, conn: sqlite3.Connection) -> tuple[bool, bool]:
     if not path.is_file() or path.is_symlink() or should_ignore(path, cfg):
         return False, False
     ext = path.suffix.lower()
     if ext in TEMP_SUFFIXES:
         return False, False
-    # Only process image files that look like fresh screenshots / generic camera images
-    if ext not in IMAGE_EXTS:
+
+    kind = file_kind(path, cfg)
+    if kind is None:
         return False, False
-    if not is_fresh_screenshot(path):
-        return False, False
+
     enabled_since = cfg.get("enabled_since")
     if enabled_since:
         try:
@@ -548,7 +743,7 @@ def process_file(path: Path, cfg: dict, conn: sqlite3.Connection) -> tuple[bool,
 
     labels = [base_label(path)]
 
-    if ext in IMAGE_EXTS:
+    if kind == "image":
         if path.stat().st_size > MAX_IMAGE_OCR_BYTES:
             log(f"skip OCR {path.name}: file exceeds 50MB")
         else:
@@ -562,7 +757,19 @@ def process_file(path: Path, cfg: dict, conn: sqlite3.Connection) -> tuple[bool,
             else:
                 labels.extend(ai_tags)
     else:
-        labels.extend(name_hints(path))
+        if path.stat().st_size > MAX_DOC_TEXT_BYTES:
+            log(f"skip doc text {path.name}: file exceeds 10MB")
+        else:
+            txt = extract_doc_text(path)
+            ai_tags = text_model_tags(txt, cfg)
+            if not ai_tags:
+                if txt.strip():
+                    log(f"model returned no tags for {path.name}")
+                else:
+                    log(f"doc text empty for {path.name}")
+                labels.extend(name_hints(path))
+            else:
+                labels.extend(ai_tags)
 
     # Deduplicate and sanitize
     uniq = []
@@ -587,13 +794,12 @@ def process_file(path: Path, cfg: dict, conn: sqlite3.Connection) -> tuple[bool,
         uniq = [base_label(path)]
     uniq = uniq[: cfg.get("max_labels", 4)]
 
-    if ext in IMAGE_EXTS:
+    if kind == "image":
         if not write_exif(path, uniq):
             log(f"warning: metadata write failed for {path.name}, skipping rename and DB update")
             return False, True
         if not write_xattrs(path, uniq):
             log(f"warning: metadata write failed for {path.name}, skipping rename and DB update")
-            # Best-effort rollback of the EXIF we just wrote
             try:
                 subprocess.run(
                     [resolve_bin("exiftool"), "-q", "-overwrite_original",
@@ -611,7 +817,7 @@ def process_file(path: Path, cfg: dict, conn: sqlite3.Connection) -> tuple[bool,
     new_path = maybe_rename(path, uniq, cfg)
     metadata_failed = False
 
-    if ext in IMAGE_EXTS:
+    if kind == "image":
         index_spotlight(new_path)
 
     st = new_path.stat()
@@ -681,7 +887,7 @@ def run_once() -> int:
         cfg = validate_config(load_config())
         conn = db()
         cleanup_orphaned_rows(conn)
-        if not dependencies_available():
+        if not dependencies_available(cfg):
             return 0
         log("scan start")
         for d in cfg.get("watch_dirs", []):
@@ -786,6 +992,39 @@ def __test__() -> int:
 
     assert resolve_bin("sh") == shutil.which("sh")
     assert resolve_bin("__definitely_missing_file_labeler_bin__") == "__definitely_missing_file_labeler_bin__"
+
+    assert parse_model_tags("sales, hiring, pipeline, mcp") == ["sales", "hiring", "pipeline", "mcp"]
+    assert parse_model_tags("image, screenshot, ui, page") == []
+    assert parse_model_tags("too many words in this response that should definitely be rejected right now please") == []
+
+    tagged = Path("2026-06-05__finance-receipt__document.pdf")
+    assert is_already_tagged(tagged) is True
+    assert is_fresh_document(tagged) is False
+    assert is_fresh_document(Path("document.pdf")) is True
+    assert is_fresh_document(Path("hiring-contract-2026.pdf")) is False
+    assert is_fresh_screenshot(Path("Screenshot 2026-06-05 at 11.54.13 AM.png")) is True
+
+    with tempfile.TemporaryDirectory() as td:
+        note = Path(td) / "notes.md"
+        note.write_text("# Hiring\nSales pipeline summary\n", encoding="utf-8")
+        assert "hiring" in extract_plain_text(note).lower()
+
+        docx = Path(td) / "report.docx"
+        with zipfile.ZipFile(docx, "w") as zf:
+            zf.writestr(
+                "word/document.xml",
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                "<w:body><w:p><w:r><w:t>Quarterly revenue report</w:t></w:r></w:p></w:body>"
+                "</w:document>",
+            )
+        assert "revenue" in extract_docx_text(docx).lower()
+
+        assert file_kind(note, {"process_docs": True}) == "doc"
+        assert file_kind(Path(td) / "hiring-contract-2026.pdf", {"process_docs": True}) is None
+        assert file_kind(Path("Screenshot 2026-05-01.png"), {"process_docs": True}) == "image"
+        assert file_kind(note, {"process_docs": False}) is None
+
     print("tests passed")
     return 0
 
